@@ -143,7 +143,9 @@ button{cursor:pointer;border:0;background:none}
 .proc li.past strong,.proc li.on strong{color:var(--text)}
 .proc em{font-style:normal;font-size:12px;font-weight:400;color:#fff;background:#000;border-radius:999px;padding:2px 8px}
 .proc a{color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:4px}
-.proc a .arrow{font-weight:400;font-size:13px;color:var(--hint);transition:transform .2s var(--ease)}
+.proc a .arrow{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:#e8f0fe;color:#1a56db;font-size:12px;font-weight:400;transition:transform .2s var(--ease),background .2s}
+.proc a:hover .arrow{background:#d2e3fc}
+.senderr{margin:0 0 10px;font-size:14px;line-height:1.5;color:var(--danger);text-align:center}
 .proc a:hover .arrow{transform:translate(2px,-2px)}
 .pc-only{display:none}
 .proc span{display:block;margin-top:4px;font-size:14px;line-height:1.55;color:var(--hint);word-break:keep-all}
@@ -958,6 +960,7 @@ function paintNav() {
 }
 function render(dir = 1) {
   const total = STEPS.length;
+  if (typeof showSendError === 'function' && $('#senderr')) showSendError('');
   paintNav();
   bar.style.width = cursor < 0 ? '0%' : `${Math.min(100, ((Math.min(cursor, total)) / total) * 100)}%`;
   back.hidden = cursor < 0 || cursor > total;
@@ -1044,11 +1047,57 @@ function showSummary(dir) {
   swapScreen(el, dir);
   updateCta();
 }
-function submit() {
-  // 시안 — 실제 저장소가 아직 없다. 제출 묶음을 콘솔에 남기고 완료 화면으로 간다.
-  console.log('[intake] submit', JSON.parse(JSON.stringify(answers)));
+/* ───────── 제출 — Supabase 접수함(intake_submissions, v2-plan/156) ─────────
+   순서: 보낼 묶음을 outbox 에 먼저 보관 → 전송 → 201(새로 받음)·409(이미 받음)일 때만 지운다.
+   실패하면 아무것도 안 지우고 「다시 보내기」. 같은 묶음은 같은 submission_id 라 두 번 보내도 한 번만 남는다. */
+const SUPABASE_URL = 'https://icqznthgglvmpxshrloh.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_uuoKU0ALFadUluwBfh_vhQ_Fyxws4d2';   // 공개 키 — 접수함에 「추가」만 된다
+const FORM_VERSION = 'v2-2026-10-16';
+const OUTBOX = 'refeeel-intake-outbox';
+let sending = false;
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+  const r = (Math.random() * 16) | 0; return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16) }));
+function payload() {
+  const a = {};
+  for (const step of STEPS) {
+    let v = answers[step.key];
+    if (step.type === 'multi') v = (v || []).map((x) => x.replace(/^@/, '').trim()).filter(Boolean);
+    if (step.type === 'products') v = (v || []).filter((p) => p.name.trim());
+    if (typeof v === 'string') v = v.trim();
+    if (v !== undefined && v !== '' && !(Array.isArray(v) && !v.length)) a[step.key] = v;
+  }
+  return a;
+}
+async function submit() {
+  if (sending) return;
+  if (window.__demo) { cursor = STEPS.length + 1; return render(1) }      // 시안 비교 화면은 보내지 않는다
+  let box = null;
+  try { box = JSON.parse(localStorage.getItem(OUTBOX) || 'null') } catch (e) {}
+  const body = payload();
+  if (!box || JSON.stringify(box.answers) !== JSON.stringify(body)) box = { submission_id: uuid(), answers: body };
+  try { localStorage.setItem(OUTBOX, JSON.stringify(box)) } catch (e) {}
+  sending = true; cta.disabled = true; cta.textContent = '보내는 중…'; showSendError('');
+  let ok = false;
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/intake_submissions`, {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, 'Content-Type': 'application/json', Prefer: 'return=minimal' },
+      body: JSON.stringify({ submission_id: box.submission_id, form_version: FORM_VERSION, answers: box.answers,
+        user_agent: navigator.userAgent.slice(0, 400), page_url: location.href.slice(0, 400) }),
+    });
+    ok = res.status === 201 || res.status === 409;
+    if (!ok) console.warn('[intake] 전송 실패', res.status, await res.text().catch(() => ''));
+  } catch (e) { console.warn('[intake] 전송 실패', e) }
+  sending = false;
+  if (!ok) { cta.disabled = false; cta.textContent = '다시 보내기'; showSendError('전송하지 못했어요. 작성한 내용은 그대로 저장돼 있어요. 다시 보내기를 눌러주세요.'); return }
+  try { localStorage.removeItem(OUTBOX) } catch (e) {}
   clear();
   cursor = STEPS.length + 1; render(1);
+}
+function showSendError(msg) {
+  let el = $('#senderr');
+  if (!el) { el = h('p', { id: 'senderr', class: 'senderr' }); dock.prepend(el) }
+  el.textContent = msg; el.style.display = msg ? '' : 'none';
 }
 function showDone() {
   const mark = h('div', { class: 'check' });
